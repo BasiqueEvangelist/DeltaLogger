@@ -16,7 +16,7 @@ public class InspectPacket {
     public static final Identifier INSPECT_PACKET = new Identifier("deltalogger", "inspect");
     public static void registerServer() {
         ServerPlayNetworking.registerGlobalReceiver(INSPECT_PACKET, ((server, player, handler, buf, responseSender) -> {
-            if (!player.hasPermissionLevel(3) && !Permissions.check(player, "deltalogger.inspect") && Permissions.check(player, "deltalogger.all")) return;
+            if (!player.hasPermissionLevel(3) && !Permissions.check(player, "deltalogger.inspect") && !Permissions.check(player, "deltalogger.all")) return;
             BlockPos pos = buf.readBlockPos();
             short limit = buf.readShort();
             PacketByteBuf response = PacketByteBufs.create();
