@@ -6,7 +6,7 @@ import com.github.fabricservertools.deltalogger.beans.Placement;
 import com.github.fabricservertools.deltalogger.beans.TransactionPos;
 import com.github.fabricservertools.deltalogger.command.DlPermissions;
 import com.github.fabricservertools.deltalogger.dao.DAO;
-import com.github.fabricservertools.deltalogger.network.SearchPacket;
+import com.github.fabricservertools.deltalogger.network.NetworkUtils;
 import com.mojang.brigadier.LiteralMessage;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
@@ -17,6 +17,7 @@ import net.minecraft.block.Block;
 import net.minecraft.command.argument.BlockStateArgument;
 import net.minecraft.command.argument.GameProfileArgumentType;
 import net.minecraft.command.argument.ItemStackArgument;
+import net.minecraft.network.PacketByteBuf;
 import net.minecraft.server.command.ServerCommandSource;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.text.MutableText;
@@ -24,8 +25,10 @@ import net.minecraft.util.Identifier;
 import net.minecraft.util.Util;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.registry.Registry;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.HashMap;
+import java.util.List;
 
 import static net.minecraft.server.command.CommandManager.argument;
 import static net.minecraft.server.command.CommandManager.literal;
@@ -48,7 +51,7 @@ public class SearchCommand {
             throws CommandSyntaxException {
         HashMap<String, Object> propertyMap;
         propertyMap = CriteriumParser.getInstance().rawProperties(criteria);
-        readAdvanced(context.getSource(), propertyMap, false);
+        readAdvanced(context.getSource(), propertyMap, null);
         return 1;
     }
 
@@ -56,7 +59,7 @@ public class SearchCommand {
      * Monstrosity of a method for building the WHERE section of a query
      * Should probably split into smaller methods at some point
      */
-    public static void readAdvanced(ServerCommandSource scs, HashMap<String, Object> propertyMap, boolean returnPackets)
+    public static void readAdvanced(ServerCommandSource scs, HashMap<String, Object> propertyMap, @Nullable PacketByteBuf responseBuf)
             throws CommandSyntaxException {
         ServerPlayerEntity sourcePlayer = scs.getPlayer();
 
@@ -123,36 +126,52 @@ public class SearchCommand {
             switch (action) {
                 case "placed":
                     sqlPlace += "AND placed = 1 ";
-                    sendPlacements(sourcePlayer, sqlPlace, limit, returnPackets);
+                    sendEmpty(responseBuf);
+                    sendEmpty(responseBuf);
+                    sendPlacements(sourcePlayer, sqlPlace, limit, responseBuf);
                     break;
                 case "broken":
                     sqlPlace += "AND placed = 0 ";
-                    sendPlacements(sourcePlayer, sqlPlace, limit, returnPackets);
+                    sendEmpty(responseBuf);
+                    sendEmpty(responseBuf);
+                    sendPlacements(sourcePlayer, sqlPlace, limit, responseBuf);
                     break;
                 case "added":
                     sqlContainer += "AND item_count > 0 ";
-                    sendTransactions(sourcePlayer, sqlContainer, limit, returnPackets);
+                    sendEmpty(responseBuf);
+                    sendTransactions(sourcePlayer, sqlContainer, limit, responseBuf);
+                    sendEmpty(responseBuf);
                     break;
                 case "taken":
                     sqlContainer += "AND item_count < 0 ";
-                    sendTransactions(sourcePlayer, sqlContainer, limit, returnPackets);
+                    sendEmpty(responseBuf);
+                    sendTransactions(sourcePlayer, sqlContainer, limit, responseBuf);
+                    sendEmpty(responseBuf);
                     break;
                 case "grief":
-                    sendGrief(sourcePlayer, sqlGrief, limit);
+                    sendGrief(sourcePlayer, sqlGrief, limit, responseBuf);
+                    sendEmpty(responseBuf);
+                    sendEmpty(responseBuf);
                     break;
                 case "everything":
-                    sendGrief(sourcePlayer, sqlGrief, limit);
-                    sendTransactions(sourcePlayer, sqlContainer, limit, returnPackets);
-                    sendPlacements(sourcePlayer, sqlPlace, limit, returnPackets);
+                    sendGrief(sourcePlayer, sqlGrief, limit, responseBuf);
+                    sendTransactions(sourcePlayer, sqlContainer, limit, responseBuf);
+                    sendPlacements(sourcePlayer, sqlPlace, limit, responseBuf);
                     break;
                 default:
                     throw new SimpleCommandExceptionType(new LiteralMessage("Invalid action: " + action))
                             .create();
             }
         } else {
-            sendTransactions(sourcePlayer, sqlContainer, limit, returnPackets);
-            sendPlacements(sourcePlayer, sqlPlace, limit, returnPackets);
+            sendEmpty(responseBuf);
+            sendTransactions(sourcePlayer, sqlContainer, limit, responseBuf);
+            sendPlacements(sourcePlayer, sqlPlace, limit, responseBuf);
+        }
+    }
 
+    private static void sendEmpty(@Nullable PacketByteBuf responseBuf) {
+        if (responseBuf != null) {
+            responseBuf.writeVarInt(0);
         }
     }
 
@@ -160,9 +179,13 @@ public class SearchCommand {
      * Takes the custom WHERE statement and queries the database for transactions,
      * prints results to chat
      */
-    private static void sendTransactions(ServerPlayerEntity player, String sqlContainer, int limit, boolean returnPackets) {
-        if (returnPackets) {
-            DAO.transaction.search(limit, sqlContainer).forEach(transactionPos -> SearchPacket.sendToClient(transactionPos, player));
+    private static void sendTransactions(ServerPlayerEntity player, String sqlContainer, int limit, @Nullable PacketByteBuf responseBuf) {
+        if (responseBuf != null) {
+            List<TransactionPos> transactionPoses = DAO.transaction.search(limit, sqlContainer);
+            responseBuf.writeVarInt(transactionPoses.size());
+            for (TransactionPos tpos : transactionPoses) {
+                NetworkUtils.writeToBuf(tpos, responseBuf);
+            }
         } else {
             MutableText transactionMessage = DAO.transaction.search(limit, sqlContainer).stream()
                     .map(TransactionPos::getText).reduce((t1, t2) -> Chat.concat("\n", t1, t2))
@@ -176,9 +199,13 @@ public class SearchCommand {
      * Takes the custom WHERE statement and queries the database for placements,
      * prints results to chat
      */
-    private static void sendPlacements(ServerPlayerEntity player, String sqlPlace, int limit, boolean returnPackets) {
-        if (returnPackets) {
-            DAO.block.search(0, limit, sqlPlace).forEach(placement -> SearchPacket.sendToClient(placement, player));
+    private static void sendPlacements(ServerPlayerEntity player, String sqlPlace, int limit, @Nullable PacketByteBuf responseBuf) {
+        if (responseBuf != null) {
+            List<Placement> placements = DAO.block.search(0, limit, sqlPlace);
+            responseBuf.writeVarInt(placements.size());
+            for (Placement placement : placements) {
+                NetworkUtils.writeToBuf(placement, responseBuf);
+            }
         } else {
             MutableText placementMessage = DAO.block.search(0, limit, sqlPlace).stream().map(Placement::getTextWithPos)
                     .reduce((p1, p2) -> Chat.concat("\n", p1, p2))
@@ -189,12 +216,20 @@ public class SearchCommand {
     }
 
 
-    private static void sendGrief(ServerPlayerEntity player, String sqlPlace, int limit) {
-        MutableText griefMessage = DAO.entity.searchGriefs(0, limit, sqlPlace).stream().map(MobGrief::getTextWithPos)
+    private static void sendGrief(ServerPlayerEntity player, String sqlPlace, int limit, @Nullable PacketByteBuf responseBuf) {
+        if (responseBuf != null) {
+            List<MobGrief> griefs = DAO.entity.searchGriefs(0, limit, sqlPlace);
+            responseBuf.writeVarInt(griefs.size());
+            for (MobGrief grief : griefs) {
+                NetworkUtils.writeToBuf(grief, responseBuf);
+            }
+        } else {
+            MutableText griefMessage = DAO.entity.searchGriefs(0, limit, sqlPlace).stream().map(MobGrief::getTextWithPos)
                 .reduce((p1, p2) -> Chat.concat("\n", p1, p2))
                 .map(txt -> Chat.concat("\n", Chat.text("deltalogger.history.grief"), txt))
                 .orElse(Chat.text("deltalogger.none_found.no_pos.grief"));
-        player.sendSystemMessage(griefMessage, Util.NIL_UUID);
+            player.sendSystemMessage(griefMessage, Util.NIL_UUID);
+        }
     }
 
     /*
