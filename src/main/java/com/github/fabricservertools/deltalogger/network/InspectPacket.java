@@ -20,8 +20,6 @@ public class InspectPacket {
             BlockPos pos = buf.readBlockPos();
             short limit = buf.readShort();
             PacketByteBuf response = PacketByteBufs.create();
-            // What the actual fuck? - BasiqueEvangelist
-            // if(player.getEntityWorld().getBlockEntity(pos) != null) {
 
             List<Transaction> transactions = DAO.transaction.getTransactionsAt(player.getEntityWorld().getRegistryKey().getValue(), pos, limit);
             response.writeVarInt(transactions.size());
